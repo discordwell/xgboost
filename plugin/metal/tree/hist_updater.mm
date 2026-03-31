@@ -127,7 +127,7 @@ struct GradPair {
 kernel void build_histogram(
     const device GradPair*  gpair        [[buffer(0)]],
     const device uint*      gmat_index   [[buffer(1)]],
-    const device uint*      row_indices  [[buffer(2)]],
+    const device ulong*     row_indices  [[buffer(2)]],
     const device uint*      cut_ptrs     [[buffer(3)]],
     device atomic_float*    hist_out     [[buffer(4)]],
     constant uint&          num_rows     [[buffer(5)]],
@@ -252,7 +252,9 @@ bool MetalHistUpdater::UpdatePredictionCache(
   if (!p_last_fmat_ || !p_last_tree_ || data != p_last_fmat_) {
     return false;
   }
-  CHECK_GT(out_preds.Size(), 0U);
+  if (out_preds.Size() == 0) {
+    return false;
+  }
 
   auto sc_tree = p_last_tree_->HostScView();
   size_t n_nodes = row_set_collection_.Size();
@@ -399,11 +401,9 @@ void MetalHistUpdater::BuildHistGPU(
     // GradientPair is {float grad, float hess}, matching GradPair in the kernel.
     const GradientPair* gpair_host = gpair.ConstHostVector().data();
     id<MTLBuffer> gpairBuf =
-        [device newBufferWithBytesNoCopy:
-                    const_cast<GradientPair*>(gpair_host)
-                                  length:gpair.Size() * sizeof(GradientPair)
-                                 options:MTLResourceStorageModeShared
-                             deallocator:nil];
+        [device newBufferWithBytes:gpair_host
+                            length:gpair.Size() * sizeof(GradientPair)
+                           options:MTLResourceStorageModeShared];
     [encoder setBuffer:gpairBuf offset:0 atIndex:0];
 
     // Buffer 1: quantized feature index (uint32_t per entry).
@@ -423,11 +423,9 @@ void MetalHistUpdater::BuildHistGPU(
     // Buffer 3: cut point offsets (host vector → need a Metal buffer).
     const auto& cut_ptrs_vec = gmat_.cut.Ptrs();
     id<MTLBuffer> cutBuf =
-        [device newBufferWithBytesNoCopy:
-                    const_cast<uint32_t*>(cut_ptrs_vec.data())
-                                  length:cut_ptrs_vec.size() * sizeof(uint32_t)
-                                 options:MTLResourceStorageModeShared
-                             deallocator:nil];
+        [device newBufferWithBytes:cut_ptrs_vec.data()
+                            length:cut_ptrs_vec.size() * sizeof(uint32_t)
+                           options:MTLResourceStorageModeShared];
     [encoder setBuffer:cutBuf offset:0 atIndex:3];
 
     // Buffer 4: output histogram.
