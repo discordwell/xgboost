@@ -264,8 +264,8 @@ LearnerModelParam::LearnerModelParam(Context const* ctx, LearnerModelParamLegacy
 linalg::VectorView<float const> LearnerModelParam::BaseScore(DeviceOrd device) const {
   // multi-class is not yet supported.
   CHECK_GE(base_score_.Size(), 1) << ModelNotFitted();
-  if (device.IsCPU()) {
-    // Make sure that we won't run into race condition.
+  if (device.IsCPU() || device.IsMetal()) {
+    // Metal uses unified memory, so host access is sufficient.
     CHECK(base_score_.Data()->HostCanRead());
     return base_score_.HostView();
   }

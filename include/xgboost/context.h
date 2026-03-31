@@ -31,6 +31,7 @@ struct DeviceSym {
   static auto constexpr SyclDefault() { return "sycl"; }
   static auto constexpr SyclCPU() { return "sycl:cpu"; }
   static auto constexpr SyclGPU() { return "sycl:gpu"; }
+  static auto constexpr Metal() { return "metal"; }
 };
 
 /**
@@ -47,7 +48,8 @@ struct DeviceOrd {
     kCUDA = 1,
     kSyclDefault = 2,
     kSyclCPU = 3,
-    kSyclGPU = 4
+    kSyclGPU = 4,
+    kMetal = 5
   } device{kCPU};
   // CUDA or Sycl device ordinal.
   bst_d_ordinal_t ordinal{CPUOrdinal()};
@@ -58,6 +60,7 @@ struct DeviceOrd {
   [[nodiscard]] bool IsSyclCPU() const { return device == kSyclCPU; }
   [[nodiscard]] bool IsSyclGPU() const { return device == kSyclGPU; }
   [[nodiscard]] bool IsSycl() const { return (IsSyclDefault() || IsSyclCPU() || IsSyclGPU()); }
+  [[nodiscard]] bool IsMetal() const { return device == kMetal; }
 
   constexpr DeviceOrd() = default;
   constexpr DeviceOrd(Type type, bst_d_ordinal_t ord) : device{type}, ordinal{ord} {}
@@ -104,6 +107,14 @@ struct DeviceOrd {
   [[nodiscard]] constexpr static auto SyclGPU(bst_d_ordinal_t ordinal = -1) {
     return DeviceOrd{kSyclGPU, ordinal};
   }
+  /**
+   * @brief Constructor for Metal (Apple Silicon GPU).
+   *
+   * @param ordinal Metal device ordinal (0 for default).
+   */
+  [[nodiscard]] constexpr static auto Metal(bst_d_ordinal_t ordinal = 0) {
+    return DeviceOrd{kMetal, ordinal};
+  }
 
   [[nodiscard]] bool operator==(DeviceOrd const& that) const {
     return device == that.device && ordinal == that.ordinal;
@@ -124,6 +135,8 @@ struct DeviceOrd {
         return DeviceSym::SyclCPU() + (':' + std::to_string(ordinal));
       case DeviceOrd::kSyclGPU:
         return DeviceSym::SyclGPU() + (':' + std::to_string(ordinal));
+      case DeviceOrd::kMetal:
+        return DeviceSym::Metal() + (':' + std::to_string(ordinal));
       default: {
         LOG(FATAL) << "Unknown device.";
         return "";
@@ -267,6 +280,10 @@ struct Context : public XGBoostParameter<Context> {
           LOG(WARNING) << "The requested feature doesn't have SYCL specific implementation yet. "
                        << "CPU implementation is used";
           return cpu_fn();
+        } else if (this->Device().IsMetal()) {
+          LOG(WARNING) << "The requested feature doesn't have Metal specific implementation yet. "
+                       << "CPU implementation is used";
+          return cpu_fn();
         } else {
           LOG(FATAL) << "Unknown device type:"
                      << static_cast<std::underlying_type_t<DeviceOrd::Type>>(this->Device().device);
@@ -286,6 +303,20 @@ struct Context : public XGBoostParameter<Context> {
       return sycl_fn();
     } else {
       return DispatchDevice(cpu_fn, cuda_fn);
+    }
+  }
+
+  /**
+   * @brief Call function for Metal devices
+   */
+  template <typename CPUFn, typename CUDAFn, typename SYCLFn, typename MetalFn>
+  decltype(auto) DispatchDevice(CPUFn&& cpu_fn, CUDAFn&& cuda_fn,
+                                SYCLFn&& sycl_fn, MetalFn&& metal_fn) const {
+    static_assert(std::is_same_v<std::invoke_result_t<CPUFn>, std::invoke_result_t<MetalFn>>);
+    if (this->Device().IsMetal()) {
+      return metal_fn();
+    } else {
+      return DispatchDevice(cpu_fn, cuda_fn, sycl_fn);
     }
   }
 

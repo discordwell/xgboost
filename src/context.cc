@@ -109,6 +109,8 @@ DeviceOrd CUDAOrdinal(DeviceOrd device, bool) {
 - cuda:<device ordinal>  # e.g. cuda:0
 - gpu
 - gpu:<device ordinal>   # e.g. gpu:0
+- metal                  # Apple Silicon GPU
+- metal:<device ordinal> # e.g. metal:0
 )"};
   auto fatal = [&] {
     LOG(FATAL) << msg << "Got: `" << input << "`.";
@@ -118,11 +120,11 @@ DeviceOrd CUDAOrdinal(DeviceOrd device, bool) {
   // mingw hangs on regex using rtools 430. Basic checks only.
   CHECK_GE(input.size(), 3) << msg;
   auto substr = input.substr(0, 3);
-  bool valid = substr == "cpu" || substr == "cud" || substr == "gpu" || substr == "syc";
+  bool valid = substr == "cpu" || substr == "cud" || substr == "gpu" || substr == "syc" || substr == "met";
   CHECK(valid) << msg;
 #else
   thread_local static std::regex pattern{
-      "gpu(:[0-9]+)?|cuda(:[0-9]+)?|cpu|sycl(:cpu|:gpu)?(:-1|:[0-9]+)?"};
+      "gpu(:[0-9]+)?|cuda(:[0-9]+)?|cpu|sycl(:cpu|:gpu)?(:-1|:[0-9]+)?|metal(:[0-9]+)?"};
   if (!std::regex_match(input, pattern)) {
     fatal();
   }
@@ -132,12 +134,14 @@ DeviceOrd CUDAOrdinal(DeviceOrd device, bool) {
 #if defined(__MINGW32__)
   // mingw hangs on regex using rtools 430. Basic checks only.
   bool is_sycl = (substr == "syc");
+  bool is_metal = (substr == "met");
 #else
   bool is_sycl = std::regex_match(input, std::regex("sycl(:cpu|:gpu)?(:-1|:[0-9]+)?"));
+  bool is_metal = std::regex_match(input, std::regex("metal(:[0-9]+)?"));
 #endif  // defined(__MINGW32__)
 
   std::string s_device = input;
-  if (!is_sycl) {
+  if (!is_sycl && !is_metal) {
     s_device = std::regex_replace(s_device, std::regex{"gpu"}, DeviceSym::CUDA());
   }
 
@@ -170,6 +174,8 @@ DeviceOrd CUDAOrdinal(DeviceOrd device, bool) {
       device = DeviceOrd::SyclCPU();
     } else if (s_device == DeviceSym::SyclGPU()) {
       device = DeviceOrd::SyclGPU();
+    } else if (s_device == DeviceSym::Metal()) {
+      device = DeviceOrd::Metal(0);
     } else {
       fatal();
     }
@@ -195,6 +201,8 @@ DeviceOrd CUDAOrdinal(DeviceOrd device, bool) {
       device = DeviceOrd::SyclCPU(opt_id.value());
     } else if (s_type == DeviceSym::SyclGPU()) {
       device = DeviceOrd::SyclGPU(opt_id.value());
+    } else if (s_type == DeviceSym::Metal()) {
+      device = DeviceOrd::Metal(opt_id.value());
     } else {
       device = DeviceOrd::CUDA(opt_id.value());
     }

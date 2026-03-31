@@ -109,6 +109,7 @@ option(PLUGIN_RMM "Build with RAPIDS Memory Manager (RMM)" OFF)
 option(PLUGIN_FEDERATED "Build with Federated Learning" OFF)
 ## TODO: 1. Add check if DPC++ compiler is used for building
 option(PLUGIN_SYCL "SYCL plugin" OFF)
+option(PLUGIN_METAL "Metal GPU plugin (macOS Apple Silicon)" OFF)
 option(ADD_PKGCONFIG "Add xgboost.pc into system." ON)
 
 #-- Checks for building XGBoost

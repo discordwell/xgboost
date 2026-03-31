@@ -53,7 +53,8 @@ std::string MapTreeMethodToUpdaters(Context const* ctx, TreeMethod tree_method) 
     case TreeMethod::kHist: {
       return ctx->DispatchDevice([] { return "grow_quantile_histmaker"; },
                                  [] { return "grow_gpu_hist"; },
-                                 [] { return "grow_quantile_histmaker_sycl"; });
+                                 [] { return "grow_quantile_histmaker_sycl"; },
+                                 [] { return "grow_quantile_histmaker_metal"; });
     }
     case TreeMethod::kApprox: {
       return ctx->DispatchDevice([] { return "grow_histmaker"; }, [] { return "grow_gpu_approx"; });

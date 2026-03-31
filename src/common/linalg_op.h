@@ -166,7 +166,8 @@ void ElementWiseKernel(Context const* ctx, TensorView<T, D> t, Fn&& fn) {
 #else
 template <typename T, std::int32_t D, typename Fn, auto _tag = detail::SysTag()>
 void ElementWiseKernel(Context const* ctx, TensorView<T, D> t, Fn&& fn) {
-  CHECK(ctx->IsCPU());
+  // Non-CUDA builds: Metal and SYCL fall through to CPU for element-wise ops
+  CHECK(ctx->IsCPU() || ctx->Device().IsSycl() || ctx->Device().IsMetal());
   ctx->DispatchDevice([&] { cpu_impl::ElementWiseKernel(t, ctx->Threads(), std::forward<Fn>(fn)); },
                       [&] { LOG(FATAL) << "Invalid TU"; });
 }
