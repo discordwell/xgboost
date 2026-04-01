@@ -59,7 +59,7 @@ constant constexpr uint SCAN_THREADGROUP_SIZE = 256;
 ///   8: missing_bin   - sentinel value for missing data (e.g. 0xFF)
 kernel void partition_flags(
     device const uint8_t*  gidx          [[buffer(0)]],
-    device const uint*     ridx          [[buffer(1)]],
+    device const ulong*    ridx          [[buffer(1)]],
     device uint*           flags         [[buffer(2)]],
     constant uint&         split_feature [[buffer(3)]],
     constant uint&         split_bin     [[buffer(4)]],
@@ -95,7 +95,7 @@ kernel void partition_flags(
 /// Same as partition_flags but for uint16_t bin indices.
 kernel void partition_flags_uint16(
     device const uint16_t* gidx          [[buffer(0)]],
-    device const uint*     ridx          [[buffer(1)]],
+    device const ulong*    ridx          [[buffer(1)]],
     device uint*           flags         [[buffer(2)]],
     constant uint&         split_feature [[buffer(3)]],
     constant uint&         split_bin     [[buffer(4)]],
@@ -252,11 +252,11 @@ kernel void prefix_sum_add_block_offset(
 ///   5: n_rows      - number of rows in ridx_in
 ///   6: n_left      - total number of left-going rows (sum of all flags)
 kernel void partition_scatter(
-    device const uint*  ridx_in     [[buffer(0)]],
+    device const ulong* ridx_in     [[buffer(0)]],
     device const uint*  flags       [[buffer(1)]],
     device const uint*  prefix_sum  [[buffer(2)]],
-    device uint*        ridx_left   [[buffer(3)]],
-    device uint*        ridx_right  [[buffer(4)]],
+    device ulong*       ridx_left   [[buffer(3)]],
+    device ulong*       ridx_right  [[buffer(4)]],
     constant uint&      n_rows      [[buffer(5)]],
     constant uint&      n_left      [[buffer(6)]],
     uint tid [[thread_position_in_grid]])
@@ -307,7 +307,7 @@ kernel void partition_scatter(
 ///   9: missing_bin   - sentinel value for missing data
 kernel void partition_atomic(
     device const uint8_t*  gidx          [[buffer(0)]],
-    device const uint*     ridx_in       [[buffer(1)]],
+    device const ulong*    ridx_in       [[buffer(1)]],
     device uint*           ridx_out      [[buffer(2)]],
     device atomic_uint*    counters      [[buffer(3)]],
     constant uint&         split_feature [[buffer(4)]],
@@ -350,7 +350,7 @@ kernel void partition_atomic(
 /// Single-pass atomic partition for uint16_t bin indices.
 kernel void partition_atomic_uint16(
     device const uint16_t* gidx          [[buffer(0)]],
-    device const uint*     ridx_in       [[buffer(1)]],
+    device const ulong*    ridx_in       [[buffer(1)]],
     device uint*           ridx_out      [[buffer(2)]],
     device atomic_uint*    counters      [[buffer(3)]],
     constant uint&         split_feature [[buffer(4)]],

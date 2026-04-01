@@ -337,7 +337,6 @@ class MetalHistUpdater {
 
   // Metal kernel pipeline states (void* wrapping id<MTLComputePipelineState>).
   void* build_hist_pipeline_{nullptr};
-  void* eval_splits_pipeline_{nullptr};
 
   // Cached Metal buffers to avoid per-dispatch allocation
   void* cached_gpair_buf_{nullptr};     // gradient pairs (updated once per iteration)

@@ -137,7 +137,7 @@ kernel void clear_histogram(
 kernel void build_histogram(
     device const float2*   gpair        [[buffer(0)]],
     device const uint8_t*  gidx         [[buffer(1)]],
-    device const uint*     ridx         [[buffer(2)]],
+    device const ulong*    ridx         [[buffer(2)]],
     device float*          hist         [[buffer(3)]],
     constant uint&         n_rows       [[buffer(4)]],
     constant uint&         row_stride   [[buffer(5)]],
@@ -236,7 +236,7 @@ kernel void build_histogram(
 kernel void build_histogram_dense(
     device const float2*   gpair       [[buffer(0)]],
     device const uint8_t*  gidx        [[buffer(1)]],
-    device const uint*     ridx        [[buffer(2)]],
+    device const ulong*    ridx        [[buffer(2)]],
     device float*          hist        [[buffer(3)]],
     device const uint*     offsets     [[buffer(4)]],
     constant uint&         n_rows      [[buffer(5)]],

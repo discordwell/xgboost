@@ -68,10 +68,6 @@ MetalHistUpdater::~MetalHistUpdater() {
       (void)(__bridge_transfer id<MTLComputePipelineState>)build_hist_pipeline_;
       build_hist_pipeline_ = nullptr;
     }
-    if (eval_splits_pipeline_) {
-      (void)(__bridge_transfer id<MTLComputePipelineState>)eval_splits_pipeline_;
-      eval_splits_pipeline_ = nullptr;
-    }
     if (metal_library_) {
       (void)(__bridge_transfer id<MTLLibrary>)metal_library_;
       metal_library_ = nullptr;
@@ -105,7 +101,7 @@ void MetalHistUpdater::LoadMetalKernels() {
     if (execPath) {
       NSString* dir = [execPath stringByDeletingLastPathComponent];
       NSString* libPath =
-          [dir stringByAppendingPathComponent:@"xgboost_metal.metallib"];
+          [dir stringByAppendingPathComponent:@"xgboost.metallib"];
       if ([[NSFileManager defaultManager] fileExistsAtPath:libPath]) {
         NSURL* url = [NSURL fileURLWithPath:libPath];
         library = [device newLibraryWithURL:url error:&error];
@@ -191,17 +187,17 @@ kernel void build_histogram(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Flush local histogram to global output using device atomics
+    // Flush local histogram to global output using CAS-loop device atomics
     for (uint i = ltid; i < nbins * 2; i += tg_size) {
         float val = as_type<float>(atomic_load_explicit(&local_hist[i], memory_order_relaxed));
         if (val != 0.0f) {
-            // Use atomic add on global memory for cross-threadgroup accumulation
-            uint old = as_type<uint>(hist_out[i]);
+            device atomic_uint* addr = (device atomic_uint*)&hist_out[i];
+            uint old = atomic_load_explicit(addr, memory_order_relaxed);
             uint next;
             do {
                 next = as_type<uint>(as_type<float>(old) + val);
             } while (!atomic_compare_exchange_weak_explicit(
-                (device atomic_uint*)&hist_out[i], &old, next,
+                addr, &old, next,
                 memory_order_relaxed, memory_order_relaxed));
         }
     }
