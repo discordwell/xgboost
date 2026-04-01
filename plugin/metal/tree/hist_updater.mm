@@ -21,6 +21,8 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <dlfcn.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -84,7 +86,7 @@ MetalHistUpdater::~MetalHistUpdater() {
 }
 
 // ============================================================================
-// LoadMetalKernels — compile or load the .metallib for histogram kernels
+// LoadMetalKernels — load the pre-compiled .metallib
 // ============================================================================
 
 void MetalHistUpdater::LoadMetalKernels() {
@@ -95,135 +97,38 @@ void MetalHistUpdater::LoadMetalKernels() {
     NSError* error = nil;
     id<MTLLibrary> library = nil;
 
-    // Try to load a pre-compiled metallib from next to the process executable.
-    NSString* execPath =
-        [[[NSProcessInfo processInfo] arguments] firstObject];
+    // Search for xgboost.metallib next to libxgboost and in standard paths.
+    NSMutableArray<NSString*>* searchPaths = [NSMutableArray array];
+
+    // Primary: next to the loaded libxgboost dylib (works for pip installs)
+    Dl_info dl_info;
+    if (dladdr((const void*)&xgboost::metal::DeviceManager::GetDevice, &dl_info) &&
+        dl_info.dli_fname) {
+      NSString* libDir = [@(dl_info.dli_fname) stringByDeletingLastPathComponent];
+      [searchPaths addObject:[libDir stringByAppendingPathComponent:@"xgboost.metallib"]];
+    }
+
+    // Also check relative to process executable and CWD
+    NSString* execPath = [[[NSProcessInfo processInfo] arguments] firstObject];
     if (execPath) {
       NSString* dir = [execPath stringByDeletingLastPathComponent];
-      NSString* libPath =
-          [dir stringByAppendingPathComponent:@"xgboost.metallib"];
-      if ([[NSFileManager defaultManager] fileExistsAtPath:libPath]) {
-        NSURL* url = [NSURL fileURLWithPath:libPath];
+      [searchPaths addObject:[dir stringByAppendingPathComponent:@"xgboost.metallib"]];
+      [searchPaths addObject:[dir stringByAppendingPathComponent:@"lib/xgboost.metallib"]];
+    }
+    [searchPaths addObject:@"xgboost.metallib"];
+
+    for (NSString* path in searchPaths) {
+      if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        NSURL* url = [NSURL fileURLWithPath:path];
         library = [device newLibraryWithURL:url error:&error];
-        if (library) {
-          LOG(INFO) << "Loaded Metal library from "
-                    << [libPath UTF8String];
-        }
+        if (library) break;
       }
     }
 
-    // Fallback: build from embedded MSL source string.
-    // The GHistIndexMatrix stores uint32_t bin indices.  For dense data the
-    // stored value is the feature-local bin offset; for sparse data it is the
-    // absolute bin index.  The kernel here handles the dense case: it adds
-    // cut_ptrs[f] to reconstruct the absolute bin, then atomically accumulates
-    // grad/hess into the histogram.
-    if (!library) {
-      NSString* source = @R"(
-#include <metal_stdlib>
-using namespace metal;
-
-struct GradPair {
-    float grad;
-    float hess;
-};
-
-// CAS-loop atomic float add for threadgroup memory
-inline void atomic_add_f(threadgroup atomic_uint* addr, float val) {
-    uint expected = atomic_load_explicit(addr, memory_order_relaxed);
-    uint next;
-    for (int i = 0; i < 14; i++) {
-        next = as_type<uint>(as_type<float>(expected) + val);
-        if (atomic_compare_exchange_weak_explicit(addr, &expected, next,
-                memory_order_relaxed, memory_order_relaxed)) return;
-    }
-    do {
-        next = as_type<uint>(as_type<float>(expected) + val);
-    } while (!atomic_compare_exchange_weak_explicit(addr, &expected, next,
-                memory_order_relaxed, memory_order_relaxed));
-}
-
-// Histogram kernel with threadgroup-local accumulation.
-// Each threadgroup builds a local histogram, then flushes to global output.
-// Threadgroup memory limit: 32KB → max ~4K bins (4K * 8 bytes = 32KB).
-kernel void build_histogram(
-    const device GradPair*  gpair        [[buffer(0)]],
-    const device uint*      gmat_index   [[buffer(1)]],
-    const device ulong*     row_indices  [[buffer(2)]],
-    const device uint*      cut_ptrs     [[buffer(3)]],
-    device float*           hist_out     [[buffer(4)]],
-    constant uint&          num_rows     [[buffer(5)]],
-    constant uint&          row_stride   [[buffer(6)]],
-    constant uint&          num_features [[buffer(7)]],
-    constant uint&          nbins        [[buffer(8)]],
-    uint                    tid          [[thread_position_in_grid]],
-    uint                    ltid         [[thread_position_in_threadgroup]],
-    uint                    tg_size      [[threads_per_threadgroup]],
-    uint                    gid          [[threadgroup_position_in_grid]])
-{
-    // Allocate threadgroup-local histogram (grad + hess per bin as atomic_uint)
-    threadgroup atomic_uint local_hist[8192]; // 4096 bins * 2 = 32KB max
-
-    // Zero local histogram
-    for (uint i = ltid; i < nbins * 2; i += tg_size) {
-        atomic_store_explicit(&local_hist[i], 0u, memory_order_relaxed);
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    // Accumulate into threadgroup-local histogram
-    if (tid < num_rows) {
-        uint row_id = row_indices[tid];
-        float g = gpair[row_id].grad;
-        float h = gpair[row_id].hess;
-
-        const device uint* row = gmat_index + row_id * row_stride;
-        for (uint f = 0; f < num_features; ++f) {
-            uint bin = row[f] + cut_ptrs[f];
-            if (bin < nbins) {
-                atomic_add_f(&local_hist[2 * bin],     g);
-                atomic_add_f(&local_hist[2 * bin + 1], h);
-            }
-        }
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    // Flush local histogram to global output using CAS-loop device atomics
-    for (uint i = ltid; i < nbins * 2; i += tg_size) {
-        float val = as_type<float>(atomic_load_explicit(&local_hist[i], memory_order_relaxed));
-        if (val != 0.0f) {
-            device atomic_uint* addr = (device atomic_uint*)&hist_out[i];
-            uint old = atomic_load_explicit(addr, memory_order_relaxed);
-            uint next;
-            do {
-                next = as_type<uint>(as_type<float>(old) + val);
-            } while (!atomic_compare_exchange_weak_explicit(
-                addr, &old, next,
-                memory_order_relaxed, memory_order_relaxed));
-        }
-    }
-}
-)";
-
-      MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
-      if (@available(macOS 15.0, *)) {
-        opts.mathMode = MTLMathModeFast;
-      } else {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        opts.fastMathEnabled = YES;
-#pragma clang diagnostic pop
-      }
-
-      library = [device newLibraryWithSource:source
-                                     options:opts
-                                       error:&error];
-      if (!library) {
-        LOG(FATAL) << "Failed to compile Metal histogram kernel: "
-                   << (error ? [[error localizedDescription] UTF8String]
-                             : "unknown error");
-      }
-      LOG(INFO) << "Compiled Metal histogram kernel from embedded source.";
-    }
+    CHECK(library)
+        << "Could not find xgboost.metallib. "
+        << "Ensure it was compiled at build time (cmake -DPLUGIN_METAL=ON) "
+        << "and installed alongside the xgboost library.";
 
     metal_library_ = (__bridge_retained void*)library;
 

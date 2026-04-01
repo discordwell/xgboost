@@ -56,37 +56,28 @@ if(PLUGIN_METAL)
     COMPILE_FLAGS "-fobjc-arc")
   target_link_libraries(plugin_metal PUBLIC ${METAL_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
 
-  # Compile Metal kernels into metallib
+  # Compile Metal kernels into metallib (required, like nvcc for CUDA)
   set(METAL_KERNEL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/metal/kernels")
   file(GLOB METAL_KERNELS "${METAL_KERNEL_DIR}/*.metal")
-  execute_process(
-    COMMAND xcrun -sdk macosx metal -v
-    OUTPUT_VARIABLE METAL_COMPILER_VERSION
-    ERROR_VARIABLE METAL_COMPILER_VERSION
-    RESULT_VARIABLE METAL_COMPILER_RESULT)
-  if(METAL_COMPILER_RESULT EQUAL 0)
-    set(METAL_AIR_FILES "")
-    foreach(metal_src IN LISTS METAL_KERNELS)
-      get_filename_component(metal_name "${metal_src}" NAME_WE)
-      set(air_file "${CMAKE_BINARY_DIR}/${metal_name}.air")
-      add_custom_command(
-        OUTPUT "${air_file}"
-        COMMAND xcrun -sdk macosx metal -c "${metal_src}" -o "${air_file}"
-        DEPENDS "${metal_src}"
-        COMMENT "Compiling Metal kernel ${metal_name}.metal")
-      list(APPEND METAL_AIR_FILES "${air_file}")
-    endforeach()
+  set(METAL_AIR_FILES "")
+  foreach(metal_src IN LISTS METAL_KERNELS)
+    get_filename_component(metal_name "${metal_src}" NAME_WE)
+    set(air_file "${CMAKE_BINARY_DIR}/${metal_name}.air")
     add_custom_command(
-      OUTPUT "${CMAKE_BINARY_DIR}/xgboost.metallib"
-      COMMAND xcrun -sdk macosx metallib ${METAL_AIR_FILES} -o "${CMAKE_BINARY_DIR}/xgboost.metallib"
-      DEPENDS ${METAL_AIR_FILES}
-      COMMENT "Linking Metal kernels into xgboost.metallib")
-    add_custom_target(metal_kernels ALL DEPENDS "${CMAKE_BINARY_DIR}/xgboost.metallib")
-    add_dependencies(plugin_metal metal_kernels)
-    install(FILES "${CMAKE_BINARY_DIR}/xgboost.metallib" DESTINATION lib)
-  else()
-    message(WARNING "Metal compiler not found. Metal kernels will be compiled at runtime.")
-  endif()
+      OUTPUT "${air_file}"
+      COMMAND xcrun -sdk macosx metal -c "${metal_src}" -o "${air_file}"
+      DEPENDS "${metal_src}"
+      COMMENT "Compiling Metal kernel ${metal_name}.metal")
+    list(APPEND METAL_AIR_FILES "${air_file}")
+  endforeach()
+  add_custom_command(
+    OUTPUT "${CMAKE_BINARY_DIR}/xgboost.metallib"
+    COMMAND xcrun -sdk macosx metallib ${METAL_AIR_FILES} -o "${CMAKE_BINARY_DIR}/xgboost.metallib"
+    DEPENDS ${METAL_AIR_FILES}
+    COMMENT "Linking Metal kernels into xgboost.metallib")
+  add_custom_target(metal_kernels ALL DEPENDS "${CMAKE_BINARY_DIR}/xgboost.metallib")
+  add_dependencies(plugin_metal metal_kernels)
+  install(FILES "${CMAKE_BINARY_DIR}/xgboost.metallib" DESTINATION lib)
 
   # Link plugin into main XGBoost library
   target_link_libraries(objxgboost PUBLIC plugin_metal)
