@@ -339,6 +339,11 @@ class MetalHistUpdater {
   void* build_hist_pipeline_{nullptr};
   void* eval_splits_pipeline_{nullptr};
 
+  // Cached Metal buffers to avoid per-dispatch allocation
+  void* cached_gpair_buf_{nullptr};     // gradient pairs (updated once per iteration)
+  size_t cached_gpair_size_{0};         // current gpair buffer size
+  void* cached_cut_ptrs_buf_{nullptr};  // cut point offsets (set once per DMatrix)
+
   // Metal library (void* wrapping id<MTLLibrary>).
   void* metal_library_{nullptr};
 };

@@ -76,6 +76,14 @@ MetalHistUpdater::~MetalHistUpdater() {
       (void)(__bridge_transfer id<MTLLibrary>)metal_library_;
       metal_library_ = nullptr;
     }
+    if (cached_gpair_buf_) {
+      (void)(__bridge_transfer id<MTLBuffer>)cached_gpair_buf_;
+      cached_gpair_buf_ = nullptr;
+    }
+    if (cached_cut_ptrs_buf_) {
+      (void)(__bridge_transfer id<MTLBuffer>)cached_cut_ptrs_buf_;
+      cached_cut_ptrs_buf_ = nullptr;
+    }
   }
 }
 
@@ -124,30 +132,77 @@ struct GradPair {
     float hess;
 };
 
+// CAS-loop atomic float add for threadgroup memory
+inline void atomic_add_f(threadgroup atomic_uint* addr, float val) {
+    uint expected = atomic_load_explicit(addr, memory_order_relaxed);
+    uint next;
+    for (int i = 0; i < 14; i++) {
+        next = as_type<uint>(as_type<float>(expected) + val);
+        if (atomic_compare_exchange_weak_explicit(addr, &expected, next,
+                memory_order_relaxed, memory_order_relaxed)) return;
+    }
+    do {
+        next = as_type<uint>(as_type<float>(expected) + val);
+    } while (!atomic_compare_exchange_weak_explicit(addr, &expected, next,
+                memory_order_relaxed, memory_order_relaxed));
+}
+
+// Histogram kernel with threadgroup-local accumulation.
+// Each threadgroup builds a local histogram, then flushes to global output.
+// Threadgroup memory limit: 32KB → max ~4K bins (4K * 8 bytes = 32KB).
 kernel void build_histogram(
     const device GradPair*  gpair        [[buffer(0)]],
     const device uint*      gmat_index   [[buffer(1)]],
     const device ulong*     row_indices  [[buffer(2)]],
     const device uint*      cut_ptrs     [[buffer(3)]],
-    device atomic_float*    hist_out     [[buffer(4)]],
+    device float*           hist_out     [[buffer(4)]],
     constant uint&          num_rows     [[buffer(5)]],
     constant uint&          row_stride   [[buffer(6)]],
     constant uint&          num_features [[buffer(7)]],
     constant uint&          nbins        [[buffer(8)]],
-    uint                    tid          [[thread_position_in_grid]])
+    uint                    tid          [[thread_position_in_grid]],
+    uint                    ltid         [[thread_position_in_threadgroup]],
+    uint                    tg_size      [[threads_per_threadgroup]],
+    uint                    gid          [[threadgroup_position_in_grid]])
 {
-    if (tid >= num_rows) return;
+    // Allocate threadgroup-local histogram (grad + hess per bin as atomic_uint)
+    threadgroup atomic_uint local_hist[8192]; // 4096 bins * 2 = 32KB max
 
-    uint row_id = row_indices[tid];
-    float g = gpair[row_id].grad;
-    float h = gpair[row_id].hess;
+    // Zero local histogram
+    for (uint i = ltid; i < nbins * 2; i += tg_size) {
+        atomic_store_explicit(&local_hist[i], 0u, memory_order_relaxed);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    const device uint* row = gmat_index + row_id * row_stride;
-    for (uint f = 0; f < num_features; ++f) {
-        uint bin = row[f] + cut_ptrs[f];
-        if (bin < nbins) {
-            atomic_fetch_add_explicit(&hist_out[2 * bin],     g, memory_order_relaxed);
-            atomic_fetch_add_explicit(&hist_out[2 * bin + 1], h, memory_order_relaxed);
+    // Accumulate into threadgroup-local histogram
+    if (tid < num_rows) {
+        uint row_id = row_indices[tid];
+        float g = gpair[row_id].grad;
+        float h = gpair[row_id].hess;
+
+        const device uint* row = gmat_index + row_id * row_stride;
+        for (uint f = 0; f < num_features; ++f) {
+            uint bin = row[f] + cut_ptrs[f];
+            if (bin < nbins) {
+                atomic_add_f(&local_hist[2 * bin],     g);
+                atomic_add_f(&local_hist[2 * bin + 1], h);
+            }
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Flush local histogram to global output using device atomics
+    for (uint i = ltid; i < nbins * 2; i += tg_size) {
+        float val = as_type<float>(atomic_load_explicit(&local_hist[i], memory_order_relaxed));
+        if (val != 0.0f) {
+            // Use atomic add on global memory for cross-threadgroup accumulation
+            uint old = as_type<uint>(hist_out[i]);
+            uint next;
+            do {
+                next = as_type<uint>(as_type<float>(old) + val);
+            } while (!atomic_compare_exchange_weak_explicit(
+                (device atomic_uint*)&hist_out[i], &old, next,
+                memory_order_relaxed, memory_order_relaxed));
         }
     }
 }
@@ -227,6 +282,23 @@ void MetalHistUpdater::Update(
 
   InitGHistIndex(p_fmat);
   InitData(gpair, *p_fmat, *p_tree);
+
+  // Copy gradient pairs to cached Metal buffer once per tree iteration.
+  @autoreleasepool {
+    id<MTLDevice> device = (__bridge id<MTLDevice>)DeviceManager::GetDevice();
+    size_t gpair_bytes = gpair.Size() * sizeof(GradientPair);
+    if (!cached_gpair_buf_ || cached_gpair_size_ != gpair.Size()) {
+      if (cached_gpair_buf_) {
+        (void)(__bridge_transfer id<MTLBuffer>)cached_gpair_buf_;
+      }
+      id<MTLBuffer> buf = [device newBufferWithLength:gpair_bytes
+                                              options:MTLResourceStorageModeShared];
+      cached_gpair_buf_ = (__bridge_retained void*)buf;
+      cached_gpair_size_ = gpair.Size();
+    }
+    id<MTLBuffer> gpairBuf = (__bridge id<MTLBuffer>)cached_gpair_buf_;
+    std::memcpy([gpairBuf contents], gpair.ConstHostVector().data(), gpair_bytes);
+  }
 
   if (param_.grow_policy == xgboost::tree::TrainParam::kLossGuide) {
     ExpandWithLossGuide(p_tree, gpair);
@@ -397,21 +469,16 @@ void MetalHistUpdater::BuildHistGPU(
 
     [encoder setComputePipelineState:pipeline];
 
-    // Buffer 0: gradient pairs.
-    // GradientPair is {float grad, float hess}, matching GradPair in the kernel.
-    const GradientPair* gpair_host = gpair.ConstHostVector().data();
-    id<MTLBuffer> gpairBuf =
-        [device newBufferWithBytes:gpair_host
-                            length:gpair.Size() * sizeof(GradientPair)
-                           options:MTLResourceStorageModeShared];
-    [encoder setBuffer:gpairBuf offset:0 atIndex:0];
+    // Buffer 0: gradient pairs — cached buffer, updated once per iteration in Update().
+    CHECK(cached_gpair_buf_) << "Gradient pairs buffer not initialized";
+    [encoder setBuffer:(__bridge id<MTLBuffer>)cached_gpair_buf_ offset:0 atIndex:0];
 
-    // Buffer 1: quantized feature index (uint32_t per entry).
+    // Buffer 1: quantized feature index (already in Metal buffer).
     id<MTLBuffer> gmatBuf =
         (__bridge id<MTLBuffer>)gmat_.index.GetMTLBuffer();
     [encoder setBuffer:gmatBuf offset:0 atIndex:1];
 
-    // Buffer 2: row indices for this node.
+    // Buffer 2: row indices for this node (subset of row_set_collection).
     id<MTLBuffer> rowIdxBuf =
         (__bridge id<MTLBuffer>)row_set_collection_.Data().GetMTLBuffer();
     size_t rowIdxOffset =
@@ -420,13 +487,16 @@ void MetalHistUpdater::BuildHistGPU(
             row_set_collection_.Data().DataConst());
     [encoder setBuffer:rowIdxBuf offset:rowIdxOffset atIndex:2];
 
-    // Buffer 3: cut point offsets (host vector → need a Metal buffer).
-    const auto& cut_ptrs_vec = gmat_.cut.Ptrs();
-    id<MTLBuffer> cutBuf =
-        [device newBufferWithBytes:cut_ptrs_vec.data()
-                            length:cut_ptrs_vec.size() * sizeof(uint32_t)
-                           options:MTLResourceStorageModeShared];
-    [encoder setBuffer:cutBuf offset:0 atIndex:3];
+    // Buffer 3: cut point offsets — cached, set once per DMatrix.
+    if (!cached_cut_ptrs_buf_) {
+      const auto& cut_ptrs_vec = gmat_.cut.Ptrs();
+      id<MTLBuffer> buf = [device newBufferWithBytes:cut_ptrs_vec.data()
+                                              length:cut_ptrs_vec.size() * sizeof(uint32_t)
+                                             options:MTLResourceStorageModeShared];
+      cached_cut_ptrs_buf_ = (__bridge_retained void*)buf;
+    }
+    [encoder setBuffer:(__bridge id<MTLBuffer>)cached_cut_ptrs_buf_
+                offset:0 atIndex:3];
 
     // Buffer 4: output histogram.
     id<MTLBuffer> histBuf =
