@@ -87,6 +87,53 @@ Developer notes
 ===============
 The application may be profiled with annotations by specifying ``USE_NTVX`` to cmake. Regions covered by the 'Monitor' class in CUDA code will automatically appear in the nsight profiler when `verbosity` is set to 3.
 
+***********************************************
+Metal Accelerated Tree Construction (macOS)
+***********************************************
+
+XGBoost includes a Metal GPU plugin for Apple Silicon Macs. The plugin accelerates histogram
+construction using Metal compute shaders with the ``hist`` tree method.
+
+Usage
+=====
+
+Specify ``device`` as ``metal``:
+
+.. code-block:: python
+  :caption: Python example
+
+  params = {"device": "metal", "tree_method": "hist"}
+  xgboost.train(params, dtrain)
+
+.. code-block:: python
+  :caption: With the Scikit-Learn interface
+
+  XGBClassifier(tree_method="hist", device="metal")
+
+The Metal plugin is built separately from the CUDA backend:
+
+.. code-block:: bash
+
+  cmake -B build -S . -DPLUGIN_METAL=ON
+  cmake --build build -j
+
+Performance
+===========
+
+Metal GPU acceleration works best on large or wide datasets. On Apple M4 Max:
+
+- **100K rows, 200 features**: ~1.5x faster than single-threaded CPU
+- **50K rows, 200 features**: ~1.2x faster than single-threaded CPU
+- Smaller datasets may be slower due to GPU dispatch overhead
+
+Limitations
+===========
+
+- FP32 only (no double precision)
+- macOS with Apple Silicon only (M1 or later)
+- Single machine training only (no distributed GPU)
+- Split evaluation and row partitioning run on CPU; only histogram construction is GPU-accelerated
+
 **********
 References
 **********

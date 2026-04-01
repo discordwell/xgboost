@@ -139,6 +139,42 @@ architectures can be found `in this page <https://developer.nvidia.com/cuda-gpus
   building XGBoost with NCCL as a shared library, while ``USE_DLOPEN_NCCL`` enables
   XGBoost to load NCCL at runtime using ``dlopen``.
 
+Building with Metal support (macOS Apple Silicon)
+==================================================
+
+The Metal plugin uses Apple Metal for GPU-accelerated histogram construction on macOS with
+Apple Silicon. It follows the same plugin architecture as the SYCL backend.
+
+From the command line on macOS:
+
+.. code-block:: bash
+
+  cmake -B build -S . -DPLUGIN_METAL=ON
+  cmake --build build -j
+
+The Metal toolchain is needed for build-time kernel compilation. Install it with:
+
+.. code-block:: bash
+
+  xcodebuild -downloadComponent MetalToolchain
+
+Usage from Python:
+
+.. code-block:: python
+
+  import xgboost as xgb
+  params = {"device": "metal", "tree_method": "hist", "objective": "binary:logistic"}
+  model = xgb.train(params, dtrain, num_boost_round=100)
+
+Metal GPU acceleration works best on large or wide datasets (100K+ rows or 100+ features).
+For smaller datasets, CPU may be faster due to GPU dispatch overhead.
+
+.. note::
+
+  Metal uses 32-bit float precision only. Double precision (``gpu_use_dp``) is not supported.
+  The Metal plugin is macOS-only and requires Apple Silicon (M1 or later).
+
+
 Federated Learning
 ==================
 
