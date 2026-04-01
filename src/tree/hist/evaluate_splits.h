@@ -809,7 +809,7 @@ class HistMultiEvaluator {
 inline void UpdatePredictionCacheImpl(Context const *ctx, ScalarTreeView const &last_tree,
                                       common::Span<bst_node_t const> node_position,
                                       linalg::VectorView<float> out_preds) {
-  CHECK(out_preds.Device().IsCPU());
+  CHECK(out_preds.Device().IsCPU() || out_preds.Device().IsMetal());
   common::ParallelFor(out_preds.Size(), ctx->Threads(), [&](std::size_t idx) {
     bst_node_t nidx = node_position[idx];
     nidx = SamplePosition::Decode(nidx);
@@ -833,7 +833,7 @@ inline void UpdatePredictionCacheImpl(Context const *ctx, RegTree const *p_last_
   auto const mt_tree = tree.HostMtView();
   auto n_targets = mt_tree.NumTargets();
   CHECK_EQ(out_preds.Shape(1), n_targets);
-  CHECK(out_preds.Device().IsCPU());
+  CHECK(out_preds.Device().IsCPU() || out_preds.Device().IsMetal());
 
   common::ParallelFor(out_preds.Shape(0), ctx->Threads(), [&](std::size_t sample_idx) {
     bst_node_t nidx = node_position[sample_idx];

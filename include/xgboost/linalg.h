@@ -595,13 +595,14 @@ auto MakeTensorView(Context const *ctx, Order order, common::Span<T, ext> data, 
 
 template <typename T, typename... S>
 auto MakeTensorView(Context const *ctx, HostDeviceVector<T> *data, S &&...shape) {
-  auto span = ctx->IsCPU() ? data->HostSpan() : data->DeviceSpan();
+  // Metal uses unified memory; treat as CPU for HostDeviceVector access
+  auto span = (ctx->IsCPU() || ctx->Device().IsMetal()) ? data->HostSpan() : data->DeviceSpan();
   return MakeTensorView(ctx->Device(), span, std::forward<S>(shape)...);
 }
 
 template <typename T, typename... S>
 auto MakeTensorView(Context const *ctx, HostDeviceVector<T> const *data, S &&...shape) {
-  auto span = ctx->IsCPU() ? data->ConstHostSpan() : data->ConstDeviceSpan();
+  auto span = (ctx->IsCPU() || ctx->Device().IsMetal()) ? data->ConstHostSpan() : data->ConstDeviceSpan();
   return MakeTensorView(ctx->Device(), span, std::forward<S>(shape)...);
 }
 
@@ -853,7 +854,7 @@ class Tensor {
    * @brief Get a @ref TensorView for this tensor.
    */
   auto View(DeviceOrd device) {
-    if (device.IsCPU()) {
+    if (device.IsCPU() || device.IsMetal()) {
       auto span = data_.HostSpan();
       return TensorView<T, kDim>{span, shape_, device, order_};
     } else {
@@ -863,7 +864,7 @@ class Tensor {
     }
   }
   auto View(DeviceOrd device) const {
-    if (device.IsCPU()) {
+    if (device.IsCPU() || device.IsMetal()) {
       auto span = data_.ConstHostSpan();
       return TensorView<T const, kDim>{span, shape_, device, order_};
     } else {

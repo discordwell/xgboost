@@ -37,7 +37,8 @@ void ExtGradientIndexPageSource::Fetch() {
     CHECK_EQ(count_, source_->Iter());
     CHECK_NE(cuts_.Values().size(), 0);
     cpu_impl::DispatchAny(proxy_, [this](auto const& value) {
-      CHECK(this->proxy_->Ctx()->IsCPU()) << "All batches must use the same device type.";
+      CHECK(this->proxy_->Ctx()->IsCPU() || this->proxy_->Ctx()->Device().IsMetal())
+          << "All batches must use the same device type.";
       auto h_feature_types = proxy_->Info().feature_types.ConstHostSpan();
       // This does three things:
       // - Generate CSR matrix for gradient index.

@@ -204,7 +204,7 @@ void TransformIdxKernel(Context const* ctx, TensorView<T, D> t, Fn&& fn) {
 #else
 template <typename T, std::int32_t D, typename Fn, auto _tag = detail::SysTag()>
 void TransformIdxKernel(Context const* ctx, TensorView<T, D> t, Fn&& fn) {
-  CHECK(ctx->IsCPU());
+  CHECK(ctx->IsCPU() || ctx->Device().IsSycl() || ctx->Device().IsMetal());
   ctx->DispatchDevice(
       [&] { cpu_impl::TransformIdxKernel(t, ctx->Threads(), std::forward<Fn>(fn)); },
       [&] { LOG(FATAL) << "Invalid TU."; });
@@ -235,7 +235,7 @@ void TransformKernel(Context const* ctx, TensorView<T, D> t, Fn&& fn) {
 #else
 template <typename T, std::int32_t D, typename Fn, auto _tag = detail::SysTag()>
 void TransformKernel(Context const* ctx, TensorView<T, D> t, Fn&& fn) {
-  CHECK(ctx->IsCPU());
+  CHECK(ctx->IsCPU() || ctx->Device().IsSycl() || ctx->Device().IsMetal());
   ctx->DispatchDevice([&] { cpu_impl::TransformKernel(t, ctx->Threads(), std::forward<Fn>(fn)); },
                       [&] { LOG(FATAL) << "Invalid TU."; });
 }

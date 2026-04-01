@@ -289,7 +289,7 @@ void CatContainer::Copy(Context const* ctx, CatContainer const& that) {
 }
 
 void CatContainer::Sort(Context const* ctx) {
-  CHECK(ctx->IsCPU());
+  CHECK(ctx->IsCPU() || ctx->Device().IsMetal());
   auto view = this->HostView();
   this->sorted_idx_.HostVector().resize(view.n_total_cats);
   enc::SortNames(enc::Policy<EncErrorPolicy>{}, view, this->sorted_idx_.HostSpan());
