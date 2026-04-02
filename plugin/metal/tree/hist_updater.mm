@@ -70,6 +70,10 @@ MetalHistUpdater::~MetalHistUpdater() {
       (void)(__bridge_transfer id<MTLComputePipelineState>)build_hist_pipeline_;
       build_hist_pipeline_ = nullptr;
     }
+    if (build_hist_large_pipeline_) {
+      (void)(__bridge_transfer id<MTLComputePipelineState>)build_hist_large_pipeline_;
+      build_hist_large_pipeline_ = nullptr;
+    }
     if (metal_library_) {
       (void)(__bridge_transfer id<MTLLibrary>)metal_library_;
       metal_library_ = nullptr;
@@ -147,6 +151,22 @@ void MetalHistUpdater::LoadMetalKernels() {
                   : "unknown error");
 
     build_hist_pipeline_ = (__bridge_retained void*)pipeline;
+
+    // Build pipeline for large histograms (>4096 bins, uses device atomics).
+    id<MTLFunction> build_hist_large_fn =
+        [library newFunctionWithName:@"build_histogram_large"];
+    CHECK(build_hist_large_fn)
+        << "Metal function 'build_histogram_large' not found in library.";
+
+    id<MTLComputePipelineState> large_pipeline =
+        [device newComputePipelineStateWithFunction:build_hist_large_fn
+                                              error:&error];
+    CHECK(large_pipeline)
+        << "Failed to create build_histogram_large pipeline: "
+        << (error ? [[error localizedDescription] UTF8String]
+                  : "unknown error");
+
+    build_hist_large_pipeline_ = (__bridge_retained void*)large_pipeline;
   }
 }
 
@@ -358,8 +378,12 @@ void MetalHistUpdater::BuildHistGPU(
         (__bridge id<MTLDevice>)DeviceManager::GetDevice();
     id<MTLCommandQueue> queue =
         (__bridge id<MTLCommandQueue>)DeviceManager::GetQueue();
+    // Select kernel: threadgroup-local for nbins<=4096, device atomics for larger
+    static constexpr size_t kMaxLocalBins = 4096;
+    bool use_large = gmat_.nbins > kMaxLocalBins;
     id<MTLComputePipelineState> pipeline =
-        (__bridge id<MTLComputePipelineState>)build_hist_pipeline_;
+        (__bridge id<MTLComputePipelineState>)(use_large ? build_hist_large_pipeline_
+                                                         : build_hist_pipeline_);
 
     id<MTLCommandBuffer> cmdBuf = [queue commandBuffer];
     CHECK(cmdBuf) << "Failed to create Metal command buffer.";

@@ -90,3 +90,49 @@ kernel void build_histogram(
         }
     }
 }
+
+// CAS-loop atomic float add for device memory
+inline void atomic_add_f_device(device atomic_uint* addr, float val) {
+    uint expected = atomic_load_explicit(addr, memory_order_relaxed);
+    uint next;
+    for (int i = 0; i < 14; i++) {
+        next = as_type<uint>(as_type<float>(expected) + val);
+        if (atomic_compare_exchange_weak_explicit(addr, &expected, next,
+                memory_order_relaxed, memory_order_relaxed)) return;
+    }
+    do {
+        next = as_type<uint>(as_type<float>(expected) + val);
+    } while (!atomic_compare_exchange_weak_explicit(addr, &expected, next,
+                memory_order_relaxed, memory_order_relaxed));
+}
+
+// Fallback histogram kernel for large bin counts (>4096) that don't fit
+// in threadgroup memory. Uses global device atomics directly — slower but
+// correct for any number of bins.
+kernel void build_histogram_large(
+    const device GradPair*  gpair        [[buffer(0)]],
+    const device uint*      gmat_index   [[buffer(1)]],
+    const device ulong*     row_indices  [[buffer(2)]],
+    const device uint*      cut_ptrs     [[buffer(3)]],
+    device float*           hist_out     [[buffer(4)]],
+    constant uint&          num_rows     [[buffer(5)]],
+    constant uint&          row_stride   [[buffer(6)]],
+    constant uint&          num_features [[buffer(7)]],
+    constant uint&          nbins        [[buffer(8)]],
+    uint                    tid          [[thread_position_in_grid]])
+{
+    if (tid >= num_rows) return;
+
+    ulong row_id = row_indices[tid];
+    float g = gpair[row_id].grad;
+    float h = gpair[row_id].hess;
+
+    const device uint* row = gmat_index + row_id * row_stride;
+    for (uint f = 0; f < num_features; ++f) {
+        uint bin = row[f] + cut_ptrs[f];
+        if (bin < nbins) {
+            atomic_add_f_device((device atomic_uint*)&hist_out[2 * bin],     g);
+            atomic_add_f_device((device atomic_uint*)&hist_out[2 * bin + 1], h);
+        }
+    }
+}
